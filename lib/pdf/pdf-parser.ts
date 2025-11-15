@@ -1,21 +1,23 @@
-import { PDFParse } from "pdf-parse";
+import { Buffer } from "node:buffer";
 import type { LoadParameters } from "pdf-parse";
-import { join } from "node:path";
-import { cwd } from "node:process";
 import { pathToFileURL } from "node:url";
+
+import { getPdfParseModule, getWorkerPath } from "./pdf-runtime";
+import type { PDFParse } from "pdf-parse";
 
 // Configure worker for Node.js environment (Next.js requires explicit path)
 let workerConfigured = false;
+type PdfParseInstance = import("pdf-parse").PDFParse;
+// Quick heuristics to skip pdf-parse when the document is clearly image-only.
+const SAMPLE_BYTES = 32 * 1024;
+const MIN_TEXTUAL_RATIO = 0.015;
+const TEXT_MARKERS = ["/Font", "/ToUnicode", "BT", "Tf"];
 
-function ensureWorkerConfigured() {
+async function ensureWorkerConfigured() {
 	if (!workerConfigured) {
 		try {
-			// For Next.js with pnpm, we need to use the worker that matches pdf-parse's pdfjs-dist version
-			// pdf-parse@2.4.5 depends on pdfjs-dist@5.4.296
-			const workerPath = join(
-				cwd(),
-				"node_modules/.pnpm/pdfjs-dist@5.4.296/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs"
-			);
+			const workerPath = await getWorkerPath();
+			const { PDFParse } = await getPdfParseModule();
 
 			// Convert to file:// URL for Node.js dynamic import
 			const workerUrl = pathToFileURL(workerPath).href;
@@ -71,18 +73,32 @@ export interface ParsedPdf {
 export async function extractPdfText(
 	buffer: Buffer | Uint8Array
 ): Promise<ParsedPdf> {
-	let parser: PDFParse | null = null;
+	if (isLikelyImageOnlyPdf(buffer)) {
+		return {
+			text: "",
+			metadata: {
+				pageCount: 0,
+			},
+		};
+	}
+
+	let parser: PdfParseInstance | null = null;
+	const pdfParseModule = await getPdfParseModule();
+	const PDFParseCtor: typeof PDFParse | undefined = pdfParseModule?.PDFParse;
+	if (!PDFParseCtor) {
+		throw new Error("PDFParse constructor unavailable");
+	}
 
 	try {
 		// Ensure worker is configured before creating parser instance
-		ensureWorkerConfigured();
+		await ensureWorkerConfigured();
 
 		// Configure pdf-parse with the buffer data
 		const loadParams: LoadParameters = {
 			data: buffer,
 		};
 
-		parser = new PDFParse(loadParams);
+	parser = new PDFParseCtor(loadParams);
 
 		// Extract text content
 		const textResult = await parser.getText();
@@ -128,4 +144,27 @@ export async function extractPdfText(
 			}
 		}
 	}
+}
+
+function isLikelyImageOnlyPdf(buffer: Buffer | Uint8Array): boolean {
+	const sampleSource = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+	const sampleLength = Math.min(sampleSource.length, SAMPLE_BYTES);
+
+	if (sampleLength === 0) {
+		return true;
+	}
+
+	const sample = sampleSource.subarray(0, sampleLength).toString("latin1");
+	const asciiMatches = sample.match(/[A-Za-z0-9]{3,}/g) ?? [];
+	const asciiCharacterCount = asciiMatches.reduce(
+		(total, match) => total + match.length,
+		0
+	);
+
+	const asciiRatio = asciiCharacterCount / sampleLength;
+	const hasTextMarkers = TEXT_MARKERS.some((marker) =>
+		sample.includes(marker)
+	);
+
+	return asciiRatio < MIN_TEXTUAL_RATIO && !hasTextMarkers;
 }
