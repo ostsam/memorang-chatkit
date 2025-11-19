@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
+import { run } from "@openai/agents";
 
 import { extractPdfText, type ParsedPdf } from "@/lib/pdf/pdf-parser";
 import {
@@ -8,12 +8,12 @@ import {
 	type NormalizedSection,
 } from "@/lib/pdf/pdf-normalizer";
 import { runDocumentAiOcr } from "@/lib/pdf/document-ai-ocr";
+import { quizWriterAgent } from "@/lib/agent/quiz-agent";
+import { mapLessonPlanToWidgetData } from "@/lib/agent/map-lesson-plan-to-widget";
+import type { LessonPlan } from "@/lib/agent/agent-schemas";
+import type { WidgetState } from "@/lib/agent/widget-state-schema";
 
 export const runtime = "nodejs";
-
-const openai = new OpenAI({
-	apiKey: process.env.OPENAI_API_KEY!,
-});
 
 type IngestResponse = {
 	metadata: ParsedPdf["metadata"];
@@ -25,8 +25,10 @@ type IngestResponse = {
 		pageCount: number;
 	};
 	message?: string;
-	lessonWorkflow?: {
-		responseId: string;
+	lessonPlan?: LessonPlan;
+	widget?: {
+		id: string;
+		data: WidgetState;
 	};
 };
 
@@ -106,28 +108,32 @@ export async function POST(request: NextRequest) {
 		// 4) Normalize text into sections for your own UI
 		const sections = normalizePdfText(text);
 
-		// 5) Call your Agent Builder workflow:
-		//    - Start node has `input_as_text`
-		//    - We pass the PDF text as `input` (a plain string)
-		let lessonWorkflow: IngestResponse["lessonWorkflow"] | undefined;
+		let lessonPlan: LessonPlan | undefined;
+		let widget:
+			| {
+					id: string;
+					data: WidgetState;
+			  }
+			| undefined;
 
-		if (!needsOcr && text.trim().length > 0 && process.env.LESSON_WORKFLOW_ID) {
+		if (!needsOcr && text.trim().length > 0) {
 			try {
-				const workflowResponse = await openai.responses.create({
-					// For workflows, you typically set model to the workflow id
-					// (or `workflow://<id>` depending on how it was given to you).
-					model: process.env.NEXT_PUBLIC_CHATKIT_WORKFLOW_ID,
-					input: text,
-				});
-
-				lessonWorkflow = {
-					responseId: workflowResponse.id,
+				const quizResult = await run(quizWriterAgent, text);
+				if (!quizResult.finalOutput) {
+					throw new Error("Quiz agent returned no output");
+				}
+				lessonPlan = quizResult.finalOutput;
+				widget = {
+					id: "step_by_step_quiz",
+					data: mapLessonPlanToWidgetData(lessonPlan),
 				};
-			} catch (workflowError) {
+			} catch (quizError) {
 				console.error(
-					"[ingest] Failed to trigger lesson workflow",
-					workflowError
+					"[ingest] Failed to generate quiz",
+					quizError
 				);
+				message =
+					"Text parsed successfully, but quiz generation failed. Please retry.";
 			}
 		}
 
@@ -137,7 +143,8 @@ export async function POST(request: NextRequest) {
 			sections,
 			ocr: ocrSummary,
 			message,
-			lessonWorkflow,
+			lessonPlan,
+			widget,
 		};
 
 		return NextResponse.json(response);
