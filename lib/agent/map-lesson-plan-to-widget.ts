@@ -1,4 +1,4 @@
-import type { LessonPlan } from "./agent-schemas";
+import { lessonPlanSchema, type LessonPlan } from "@/lib/agent/agent-schemas";
 import {
 	widgetStateSchema,
 	type WidgetState,
@@ -25,8 +25,9 @@ const resolveCorrectChoiceId = (
 };
 
 export function mapLessonPlanToWidgetData(
-	lessonPlan: LessonPlan,
+	input: LessonPlan | unknown,
 ): WidgetState {
+	const lessonPlan = lessonPlanSchema.parse(input);
 	const questions = lessonPlan.questions.map((question, questionIndex) => ({
 		id: questionIndex + 1,
 		question: question.question,
