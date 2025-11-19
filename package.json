@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@openai/agents": "^0.3.2",
     "@openai/chatkit": "^1.0.1",
     "@openai/chatkit-react": ">=1.1.1 <2.0.0",
     "google-auth-library": "^10.5.0",
@@ -18,7 +19,8 @@
     "pdfjs-dist": "^5.4.296",
     "pnpm": "^10.22.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "zod": "^3.25.76"
   },
   "optionalDependencies": {
     "@tailwindcss/oxide-linux-x64-gnu": "4.1.11",
